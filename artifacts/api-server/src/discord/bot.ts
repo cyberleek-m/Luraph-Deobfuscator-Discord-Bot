@@ -75,6 +75,22 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function summarizeProcessFailure(stderr: string, stdout: string) {
+  const lines = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "";
+
+  const important = lines.filter((line) =>
+    /(?:failed|error|invalid argument|attempt to|compile error|script error|timed out|function render)/i.test(
+      line,
+    ),
+  );
+  const selected = [...new Set([...important.slice(0, 5), ...lines.slice(-8)])];
+  return selected.join("\n").slice(0, 2_000);
+}
+
 function tokenize(input: string) {
   return input.match(/--[A-Za-z0-9-]+(?:=(?:"[^"]*"|'[^']*'|[^\s]+))?|[^\s]+/g) ?? [];
 }
@@ -247,11 +263,7 @@ async function processJob(input: InputFile, options: ParsedOptions) {
     }
 
     if (result.code !== 0) {
-      const detail = result.stderr
-        .split("\n")
-        .filter((line) => line.trim())
-        .slice(-4)
-        .join("\n");
+      const detail = summarizeProcessFailure(result.stderr, result.stdout);
       throw new Error(detail || "The deobfuscator could not process this file.");
     }
 
@@ -356,7 +368,11 @@ async function handleMessage(message: Message) {
       });
     }
   } catch (error) {
-    const content = `Deobfuscation failed: ${errorMessage(error).slice(0, 1_500)}`;
+    const detail = errorMessage(error).slice(0, 1_700);
+    const hint = /harness|function render|script error/i.test(detail)
+      ? `\nTry \`${PREFIX}deobf --no-devirt\` for the fast behaviour-trace mode.`
+      : "";
+    const content = `Deobfuscation failed:\n${detail}${hint}`;
     if (progress) {
       await progress.edit({ content }).catch(() => undefined);
     } else {
