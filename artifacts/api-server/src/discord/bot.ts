@@ -3,6 +3,8 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  OAuth2Scopes,
+  PermissionFlagsBits,
   type Message,
 } from "discord.js";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -377,7 +379,11 @@ export async function startDiscordBot() {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   });
   client.once(Events.ClientReady, (readyClient) => {
-    logger.info({ tag: readyClient.user.tag, prefix: PREFIX }, "Discord bot ready");
+    const invite = readyClient.generateInvite({
+      permissions: [PermissionFlagsBits.Administrator],
+      scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands],
+    });
+    logger.info({ tag: readyClient.user.tag, prefix: PREFIX, invite }, "Discord bot ready");
   });
   client.on(Events.MessageCreate, (message) => {
     void handleMessage(message).catch((error) => {
