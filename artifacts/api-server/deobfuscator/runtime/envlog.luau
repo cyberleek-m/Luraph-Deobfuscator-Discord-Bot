@@ -19,6 +19,10 @@ local MAX_STMTS = CFG.max_stmts or 250000
 local MAX_BLOCK = CFG.max_block or 25000
 local MAX_WAITS = CFG.max_waits or 50
 local MAX_DEPTH = CFG.max_depth or 24
+-- Rendering is recursive because captured callbacks and proxy expressions can
+-- contain one another. Keep malformed or unusually deep VM output from
+-- exhausting Luau's native C stack after the trace itself has completed.
+local MAX_RENDER_DEPTH = CFG.max_render_depth or 48
 local TIME_BUDGET = CFG.time_budget or 30
 
 -- untouched references to the real globals
@@ -4291,6 +4295,8 @@ local present = {}
 local used = {}
 local names = {}
 local nameCount = {}
+local renderDepth = 0
+local exprDepth = 0
 
 local function sanitize(h)
 	h = R.tostring(h or "v")
@@ -4351,19 +4357,34 @@ local resolve
 CHAIN.exprOf = function(p) return exprOf(p) end
 function exprOf(p)
 	local info = INFO[p]
-	if info.kind == "name" then return info.name end
-	if info.kind == "index" then return exprOf(info.parent) .. keySuffix(info.key) end
-	if info.kind == "expr" then return resolve(info.text, info.indent or 0) end
-	if info.kind == "call" then
-		if info.var then return info.var end
-		return resolve(info.stmt.call, info.indent or 0)
+	if not info then return "nil" end
+	if exprDepth >= MAX_RENDER_DEPTH then return "nil" end
+	exprDepth += 1
+	local result
+	if info.kind == "name" then
+		result = info.name
+	elseif info.kind == "index" then
+		result = exprOf(info.parent) .. keySuffix(info.key)
+	elseif info.kind == "expr" then
+		result = resolve(info.text, info.indent or 0)
+	elseif info.kind == "call" then
+		if info.var then
+			result = info.var
+		else
+			result = resolve(info.stmt.call, info.indent or 0)
+		end
+	else
+		result = "nil"
 	end
-	return "nil"
+	exprDepth -= 1
+	return result
 end
 
 local renderBlock
 
 function resolve(text, ind)
+	if renderDepth >= MAX_RENDER_DEPTH then return "nil" end
+	renderDepth += 1
 	for _ = 1, 10 do
 		if not R.find(text, "\1%d+\2") then break end
 		text = R.gsub(text, "\1(%d+)\2", function(id)
@@ -4441,12 +4462,18 @@ function resolve(text, ind)
 		R.insert(lines, R.rep("\t", ind + k) .. "end")
 		return R.concat(lines, "\n")
 	end)
+	renderDepth -= 1
 	return text
 end
 
 -- statement markers for fold.py: "--@<lines> <chain>" before each statement
 -- (<lines> = how many output lines the statement takes)
 function renderBlock(block, ind, out)
+	if renderDepth >= MAX_RENDER_DEPTH then
+		R.insert(out, R.rep("\t", ind) .. "-- [envlog] rendering truncated at depth limit")
+		return
+	end
+	renderDepth += 1
 	local pad = R.rep("\t", ind)
 	for _, s in block.lines do
 		local mark = CHAIN.markers and #out + 1
@@ -4475,6 +4502,7 @@ function renderBlock(block, ind, out)
 			out[mark] = pad .. "--@" .. n .. " " .. (s.chain or "")
 		end
 	end
+	renderDepth -= 1
 end
 
 local function render()

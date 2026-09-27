@@ -1,1 +1,2 @@
 - [Linux Luau runtime](luau-runtime.md) — the upstream deobfuscator snapshot ships Windows helpers, so Linux builds need native `luau` and `luau-ast` binaries.
+- [Deep Luraph traces](deep-luraph-traces.md) — recursive rendering can hit Luau's C stack; bounded rendering and compressed Discord output keep large traces usable.

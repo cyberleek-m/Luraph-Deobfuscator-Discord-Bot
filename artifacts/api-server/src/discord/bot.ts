@@ -12,11 +12,13 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 import { logger } from "../lib/logger";
 
 const PREFIX = process.env.DISCORD_PREFIX ?? "!";
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
-const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_RAW_OUTPUT_BYTES = 32 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_JOBS = clampInteger(
   process.env.MAX_CONCURRENT_DEOBF_JOBS,
   1,
@@ -271,16 +273,22 @@ async function processJob(input: InputFile, options: ParsedOptions) {
     if (!outputStat || outputStat.size === 0) {
       throw new Error("The deobfuscator finished without producing an output file.");
     }
-    if (outputStat.size > MAX_OUTPUT_BYTES) {
-      throw new Error("The output is larger than Discord's 8 MiB bot limit.");
+    if (outputStat.size > MAX_RAW_OUTPUT_BYTES) {
+      throw new Error("The raw output is larger than the bot's 32 MiB processing limit.");
     }
 
     const output = await readFile(outputPath);
+    const compressed = output.length > MAX_ATTACHMENT_BYTES;
+    const attachmentBytes = compressed ? gzipSync(output) : output;
+    if (attachmentBytes.length > MAX_ATTACHMENT_BYTES) {
+      throw new Error("The output is too large to send to Discord, even when compressed.");
+    }
     return {
       kind: "file" as const,
-      name: path.basename(outputPath),
-      bytes: output,
+      name: compressed ? `${path.basename(outputPath)}.gz` : path.basename(outputPath),
+      bytes: attachmentBytes,
       debug: options.debug,
+      compressed,
     };
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
@@ -309,7 +317,7 @@ function helpText() {
     "`--devirt-rounds N` 1–1000 decryption rounds",
     "`--executor Wave|Legacy` choose the executor mode",
     "",
-    `Jobs are limited to ${MAX_SOURCE_BYTES / 1024 / 1024} MiB input/output, ${MAX_CONCURRENT_JOBS} concurrent job${MAX_CONCURRENT_JOBS === 1 ? "" : "s"}, and a 10 second per-user cooldown.`,
+    `Jobs are limited to ${MAX_SOURCE_BYTES / 1024 / 1024} MiB input, ${MAX_RAW_OUTPUT_BYTES / 1024 / 1024} MiB raw output, ${MAX_CONCURRENT_JOBS} concurrent job${MAX_CONCURRENT_JOBS === 1 ? "" : "s"}, and a 10 second per-user cooldown.`,
   ].join("\n");
 }
 
@@ -362,8 +370,12 @@ async function handleMessage(message: Message) {
     } else {
       const attachment = new AttachmentBuilder(result.bytes, { name: result.name });
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      const notes = [
+        result.compressed ? "gzip-compressed output" : null,
+        result.debug ? "debug macros enabled" : null,
+      ].filter((note): note is string => note !== null);
       await progress.edit({
-        content: `Done in ${elapsed}s${result.debug ? " (debug macros enabled)." : "."}`,
+        content: `Done in ${elapsed}s${notes.length > 0 ? ` (${notes.join("; ")}).` : "."}`,
         files: [attachment],
       });
     }
