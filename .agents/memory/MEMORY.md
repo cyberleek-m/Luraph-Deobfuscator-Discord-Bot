@@ -1,0 +1,1 @@
+- [Linux Luau runtime](luau-runtime.md) — the upstream deobfuscator snapshot ships Windows helpers, so Linux builds need native `luau` and `luau-ast` binaries.

@@ -1,6 +1,6 @@
-# [Project name]
+# Luraph Deobfuscator Discord Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A Discord bot that accepts Lua/Luau uploads, runs the bundled Luraph v15 deobfuscator, and returns the reconstructed script.
 
 ## Run & Operate
 
@@ -10,6 +10,7 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- Required secret: `DISCORD_BOT_TOKEN` — Discord bot token
 
 ## Stack
 
@@ -19,26 +20,34 @@ _Replace the heading above with the project's name, and this line with one sente
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
+- Bot: discord.js Gateway client
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/discord/bot.ts` — Discord commands, attachment handling, macro validation, job limits, and cleanup.
+- `artifacts/api-server/deobfuscator/` — upstream Luraph v15 CLI plus the Linux Luau and Luau AST runtimes.
+- `artifacts/api-server/src/index.ts` — starts the HTTP health server and Discord client.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The bot wraps the upstream CLI instead of reimplementing its deobfuscation pipeline, preserving its existing flags and output behavior.
+- Each job runs in a unique temporary directory and is deleted after completion, including failed jobs.
+- User-supplied CLI arguments are allowlisted and numeric macros are range-checked before spawning the child process.
+- Discord jobs are bounded by input/output size, per-user cooldown, concurrent-job count, and a hard process timeout.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Use `!help` for the full command list. Use `!deobf` with a `.lua`/`.luau` attachment or fenced Lua code block. Supported aliases are `!deobfuscate`, `!commands`, and `!ping`. Deobfuscation macros mirror the upstream CLI, including `--debug`, `--no-devirt`, `--detect`, timeout/budget controls, and executor selection.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+Keep the bot prefix at `!` unless a different value is explicitly configured with `DISCORD_PREFIX`.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The Discord application must have the Message Content Intent enabled or prefix commands will not be received.
+- The bot requires the `DISCORD_BOT_TOKEN` secret; without it, the HTTP health service still starts but the Discord client stays disabled.
+- The upstream runtime expects `bin/luau` and `bin/luau-ast` on Linux; both are checked into the deobfuscator runtime directory.
 
 ## Pointers
 
