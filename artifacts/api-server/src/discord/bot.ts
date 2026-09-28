@@ -1,6 +1,7 @@
 import {
   AttachmentBuilder,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   OAuth2Scopes,
@@ -16,6 +17,8 @@ import { deflateRawSync } from "node:zlib";
 import { logger } from "../lib/logger";
 
 const PREFIX = process.env.DISCORD_PREFIX ?? "!";
+const BRAND_NAME = "WhaleHub";
+const WATERMARK = "-- generated at .gg/bonnieblue";
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_RAW_OUTPUT_BYTES = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
@@ -75,6 +78,24 @@ function clampInteger(value: string | undefined, min: number, max: number, fallb
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function addWatermark(output: Buffer) {
+  return Buffer.concat([Buffer.from(`${WATERMARK}\n\n`, "utf8"), output]);
+}
+
+function buildPreview(output: Buffer) {
+  const lines = output
+    .toString("utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && line.trim() !== WATERMARK)
+    .slice(0, 6);
+  const preview = lines.join("\n").replace(/```/g, "'''").slice(0, 850);
+  return preview || "Preview unavailable.";
+}
+
+function countOutputFunctions(output: Buffer) {
+  return (output.toString("utf8").match(/\bfunction\b/g) ?? []).length;
 }
 
 function crc32(input: Buffer) {
@@ -337,7 +358,7 @@ async function processJob(input: InputFile, options: ParsedOptions) {
       throw new Error("The raw output is larger than the bot's 32 MiB processing limit.");
     }
 
-    const output = await readFile(outputPath);
+    const output = addWatermark(await readFile(outputPath));
     const baseName = path.basename(outputPath, path.extname(outputPath));
     const archived = output.length > MAX_ATTACHMENT_BYTES;
     const attachmentBytes = archived
@@ -352,6 +373,9 @@ async function processJob(input: InputFile, options: ParsedOptions) {
       bytes: attachmentBytes,
       debug: options.debug,
       archived,
+      functionCount: countOutputFunctions(output),
+      lineCount: output.toString("utf8").split(/\r?\n/).length,
+      preview: buildPreview(output),
     };
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
@@ -437,8 +461,26 @@ async function handleMessage(message: Message) {
         result.archived ? "ZIP with readable TXT" : null,
         result.debug ? "debug macros enabled" : null,
       ].filter((note): note is string => note !== null);
+      const embed = new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle("✅ Deobfuscation complete")
+        .setDescription("Your cleaned script is attached below.")
+        .addFields(
+          { name: "Input", value: `\`${input.name}\``, inline: true },
+          { name: "Obfuscator", value: "Luraph v15", inline: true },
+          { name: "Mode", value: `🏷️ Watermarked (${BRAND_NAME})`, inline: true },
+          { name: "Functions", value: String(result.functionCount), inline: true },
+          { name: "Lines", value: String(result.lineCount), inline: true },
+          { name: "Time", value: `${elapsed}s`, inline: true },
+          {
+            name: "Preview (first 6 lines)",
+            value: `\`\`\`lua\n${result.preview}\n\`\`\``,
+          },
+        )
+        .setFooter({ text: `${BRAND_NAME} DEOBFUSCATOR` });
       await progress.edit({
-        content: `Done in ${elapsed}s${notes.length > 0 ? ` (${notes.join("; ")}).` : "."}`,
+        content: notes.length > 0 ? notes.join(" · ") : null,
+        embeds: [embed],
         files: [attachment],
       });
     }
