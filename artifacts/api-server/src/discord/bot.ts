@@ -18,7 +18,7 @@ import { logger } from "../lib/logger";
 const PREFIX = process.env.DISCORD_PREFIX ?? "!";
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_RAW_OUTPUT_BYTES = 32 * 1024 * 1024;
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 const MAX_CONCURRENT_JOBS = clampInteger(
   process.env.MAX_CONCURRENT_DEOBF_JOBS,
   1,
