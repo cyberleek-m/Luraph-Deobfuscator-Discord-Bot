@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { deflateRawSync } from "node:zlib";
 import { logger } from "../lib/logger";
 
 const PREFIX = process.env.DISCORD_PREFIX ?? "!";
@@ -75,6 +75,66 @@ function clampInteger(value: string | undefined, min: number, max: number, fallb
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function crc32(input: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of input) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipTextFile(name: string, content: Buffer) {
+  const filename = Buffer.from(name, "utf8");
+  const compressed = deflateRawSync(content, { level: 9 });
+  const crc = crc32(content);
+
+  const localHeader = Buffer.alloc(30 + filename.length);
+  localHeader.writeUInt32LE(0x04034b50, 0);
+  localHeader.writeUInt16LE(20, 4);
+  localHeader.writeUInt16LE(0, 6);
+  localHeader.writeUInt16LE(8, 8);
+  localHeader.writeUInt16LE(0, 10);
+  localHeader.writeUInt16LE(0, 12);
+  localHeader.writeUInt32LE(crc, 14);
+  localHeader.writeUInt32LE(compressed.length, 18);
+  localHeader.writeUInt32LE(content.length, 22);
+  localHeader.writeUInt16LE(filename.length, 26);
+  localHeader.writeUInt16LE(0, 28);
+  filename.copy(localHeader, 30);
+
+  const centralHeader = Buffer.alloc(46 + filename.length);
+  centralHeader.writeUInt32LE(0x02014b50, 0);
+  centralHeader.writeUInt16LE(20, 4);
+  centralHeader.writeUInt16LE(20, 6);
+  centralHeader.writeUInt16LE(0, 8);
+  centralHeader.writeUInt16LE(8, 10);
+  centralHeader.writeUInt16LE(0, 12);
+  centralHeader.writeUInt16LE(0, 14);
+  centralHeader.writeUInt32LE(crc, 16);
+  centralHeader.writeUInt32LE(compressed.length, 20);
+  centralHeader.writeUInt32LE(content.length, 24);
+  centralHeader.writeUInt16LE(filename.length, 28);
+  centralHeader.writeUInt16LE(0, 30);
+  centralHeader.writeUInt16LE(0, 32);
+  centralHeader.writeUInt16LE(0, 34);
+  centralHeader.writeUInt16LE(0, 36);
+  centralHeader.writeUInt32LE(0, 38);
+  centralHeader.writeUInt32LE(0, 42);
+  filename.copy(centralHeader, 46);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(centralHeader.length, 12);
+  end.writeUInt32LE(localHeader.length + compressed.length, 16);
+
+  return Buffer.concat([localHeader, compressed, centralHeader, end]);
 }
 
 function summarizeProcessFailure(stderr: string, stdout: string) {
@@ -278,17 +338,20 @@ async function processJob(input: InputFile, options: ParsedOptions) {
     }
 
     const output = await readFile(outputPath);
-    const compressed = output.length > MAX_ATTACHMENT_BYTES;
-    const attachmentBytes = compressed ? gzipSync(output) : output;
+    const baseName = path.basename(outputPath, path.extname(outputPath));
+    const archived = output.length > MAX_ATTACHMENT_BYTES;
+    const attachmentBytes = archived
+      ? zipTextFile(`${baseName}.txt`, output)
+      : output;
     if (attachmentBytes.length > MAX_ATTACHMENT_BYTES) {
-      throw new Error("The output is too large to send to Discord, even when compressed.");
+      throw new Error("The output is too large to send to Discord, even as a ZIP archive.");
     }
     return {
       kind: "file" as const,
-      name: compressed ? `${path.basename(outputPath)}.gz` : path.basename(outputPath),
+      name: archived ? `${baseName}.txt.zip` : `${baseName}.txt`,
       bytes: attachmentBytes,
       debug: options.debug,
-      compressed,
+      archived,
     };
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
@@ -371,7 +434,7 @@ async function handleMessage(message: Message) {
       const attachment = new AttachmentBuilder(result.bytes, { name: result.name });
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       const notes = [
-        result.compressed ? "gzip-compressed output" : null,
+        result.archived ? "ZIP with readable TXT" : null,
         result.debug ? "debug macros enabled" : null,
       ].filter((note): note is string => note !== null);
       await progress.edit({
